@@ -7,3 +7,4 @@ seaborn
 fuzzywuzzy
 sentence-transformers
 scipy
+plotly
