@@ -1,7 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly as px
+try:
+    import plotly.express as px
+except ImportError:
+    import sys
+    sys.exit("O pacote plotly não está instalado. Corrija o requirements e faça o deploy novamente.")
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from io import BytesIO
