@@ -12,6 +12,25 @@ from io import BytesIO
 import requests
 import ast
 
+# Defina a sua senha secreta aqui
+PASSWORD = "cdshell"  # Troque por uma senha forte
+
+def check_password():
+    """Exibe um campo de senha e retorna True se a senha estiver correta."""
+    st.sidebar.header("🔒 Área protegida")
+    password = st.sidebar.text_input("Digite a senha para acessar o app:", type="password")
+    if password == PASSWORD:
+        return True
+    elif password:
+        st.sidebar.error("Senha incorreta. Tente novamente.")
+        return False
+    else:
+        return False
+
+if not check_password():
+    st.stop()  # Interrompe o app até digitar a senha correta
+
+
 st.set_page_config(layout="wide")
 st.title("🔎 Detecção de Sinais Fracos em Eventos Offshore")
 
