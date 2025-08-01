@@ -1,5 +1,6 @@
 streamlit
 pandas
+plotly
 openpyxl
 scikit-learn
 matplotlib
@@ -7,4 +8,3 @@ seaborn
 fuzzywuzzy
 sentence-transformers
 scipy
-plotly
