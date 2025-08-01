@@ -1,154 +1,141 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+import numpy as np
 import plotly.express as px
-import requests
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 from io import BytesIO
+import requests
+import ast
 
-# --- CONFIGURAÇÃO
-st.set_page_config(page_title="Análise de Eventos Offshore", layout="wide")
+st.set_page_config(layout="wide")
+st.title("🔎 Detecção de Sinais Fracos em Eventos Offshore")
 
-# --- FUNÇÃO PARA CARREGAR DO GITHUB
-@st.cache_data(ttl=3600)
-def load_data_from_github():
-    url = "https://raw.githubusercontent.com/titetodesco/sphera/main/TRATADO_safeguardOffShore.xlsx"
-    response = requests.get(url)
-    if response.status_code != 200:
-        st.error("Erro ao baixar o arquivo do GitHub!")
-        return None
-    return pd.read_excel(BytesIO(response.content))
+# URLs dos arquivos no GitHub
+URL_EVENTOS = "https://raw.githubusercontent.com/titetodesco/Precursores/main/TRATADO_safeguardOffShore.xlsx"
+URL_WEAK = "https://raw.githubusercontent.com/titetodesco/Precursores/main/DicionarioWaekSignals.xlsx"
 
-# --- SIDEBAR
-st.sidebar.title("⚙️ Configurações")
-if st.sidebar.button("🔁 Atualizar Dados do GitHub"):
+def carregar_excel_url(url):
+    r = requests.get(url)
+    r.raise_for_status()
+    return pd.read_excel(BytesIO(r.content))
+
+@st.cache_data
+def load_data():
+    df_eventos = carregar_excel_url(URL_EVENTOS)
+    df_dict    = carregar_excel_url(URL_WEAK)
+    return df_eventos, df_dict
+
+if st.button("🔄 Atualizar dados do GitHub"):
     st.cache_data.clear()
 
-df = load_data_from_github()
-if df is None:
-    st.stop()
+df_eventos, df_dict = load_data()
 
-# --- FILTRO DE LOCATION
-locations = sorted(df["Location"].dropna().unique())
-selected_locations = st.sidebar.multiselect("Filtrar por Location", locations, default=locations)
-df_filtered = df[df["Location"].isin(selected_locations)] if selected_locations else df.copy()
+# Ajuste de nomes se necessário:
+if "eventoID" in df_eventos.columns and "Event ID" not in df_eventos.columns:
+    df_eventos = df_eventos.rename(columns={"eventoID": "Event ID"})
 
-# --- MENU DE ANÁLISE
-analises = [
-    "Resumo dos Dados",
-    "Heatmap Location × Risk Area",
-    "Heatmap Location × Human Factor",
-    "Heatmap Task × Human Factor",
-    "Heatmap Risk Area × Human Factor",
-    "Tendência Temporal de Eventos",
-    "Top Tasks por Risk Area",
-]
-selected_analise = st.sidebar.radio("Escolha a análise:", analises)
+# Conversão robusta de data
+if "Date Occurred" in df_eventos.columns:
+    df_eventos["Date Occurred"] = pd.to_datetime(df_eventos["Date Occurred"], errors="coerce", infer_datetime_format=True)
+    if df_eventos["Date Occurred"].isna().mean() > 0.9:
+        df_eventos["Date Occurred"] = pd.to_datetime(df_eventos["Date Occurred"], errors="coerce", dayfirst=True, infer_datetime_format=True)
 
-# --- ÁREA PRINCIPAL
+# Sidebar
+modo = st.sidebar.selectbox("Modo de Detecção", ["Embeddings", "Fuzzy"])
+thresh = st.sidebar.slider("Threshold de Similaridade", 0.3, 0.95, 0.5, 0.01)
 
-if selected_analise == "Resumo dos Dados":
-    st.header("📊 Resumo dos Dados")
-    st.write(f"Total de eventos únicos: {df_filtered['Event ID'].nunique():,}")
-    st.write(f"Período dos eventos: {df_filtered['Date Occurred'].min().date()} até {df_filtered['Date Occurred'].max().date()}")
-    st.write("Tipos de evento:")
-    st.dataframe(df_filtered["Event Type"].value_counts().rename("Contagem"))
+# REMOVE DUPLICIDADE: considera apenas 1 linha por evento para a análise (usando Event ID)
+df_unicos = df_eventos.drop_duplicates(subset=["Event ID"]).copy()
 
-    st.subheader("Amostra dos dados")
-    st.dataframe(df_filtered.head(25))
-
-    st.subheader("Contagem por Location")
-    st.bar_chart(df_filtered.groupby("Location")["Event ID"].nunique())
-
-elif selected_analise == "Heatmap Location × Risk Area":
-    st.header("📍 Heatmap Location × Risk Area")
-    pivot = (
-        df_filtered.drop_duplicates(subset=["Event ID", "Location", "Risk Area"])
-        .pivot_table(index="Location", columns="Risk Area", values="Event ID", aggfunc="nunique", fill_value=0)
-    )
-    plt.figure(figsize=(12, min(8, 0.4*len(pivot))))
-    sns.heatmap(pivot, annot=True, fmt="d", cmap="YlGnBu", linewidths=0.5)
-    plt.title("Nº de Eventos distintos por Location e Risk Area")
-    st.pyplot(plt.gcf())
-    plt.clf()
-
-elif selected_analise == "Heatmap Location × Human Factor":
-    st.header("📍 Heatmap Location × Human Factor")
-    pivot = (
-        df_filtered.drop_duplicates(subset=["Event ID", "Location", "Event: Human Factors"])
-        .pivot_table(index="Location", columns="Event: Human Factors", values="Event ID", aggfunc="nunique", fill_value=0)
-    )
-    plt.figure(figsize=(12, min(8, 0.4*len(pivot))))
-    sns.heatmap(pivot, annot=True, fmt="d", cmap="Oranges", linewidths=0.5)
-    plt.title("Nº de Eventos distintos por Location e Human Factor")
-    st.pyplot(plt.gcf())
-    plt.clf()
-
-elif selected_analise == "Heatmap Task × Human Factor":
-    st.header("🔗 Heatmap Task × Human Factor")
-    pivot = (
-        df_filtered.drop_duplicates(subset=["Event ID", "Task / Activity", "Event: Human Factors"])
-        .pivot_table(index="Task / Activity", columns="Event: Human Factors", values="Event ID", aggfunc="nunique", fill_value=0)
-    )
-    # Seleciona só os top N mais comuns para visual não ficar ilegível
-    N = 20
-    top_tasks = pivot.sum(axis=1).sort_values(ascending=False).head(N).index
-    top_hf = pivot.sum(axis=0).sort_values(ascending=False).head(N).index
-    pivot = pivot.loc[top_tasks, top_hf]
-    plt.figure(figsize=(14, 8))
-    sns.heatmap(pivot, annot=True, fmt="d", cmap="Blues", linewidths=0.5)
-    plt.title("Top Tasks × Human Factor")
-    st.pyplot(plt.gcf())
-    plt.clf()
-
-elif selected_analise == "Heatmap Risk Area × Human Factor":
-    st.header("🔗 Heatmap Risk Area × Human Factor")
-    pivot = (
-        df_filtered.drop_duplicates(subset=["Event ID", "Risk Area", "Event: Human Factors"])
-        .pivot_table(index="Risk Area", columns="Event: Human Factors", values="Event ID", aggfunc="nunique", fill_value=0)
-    )
-    N = 20
-    top_risk = pivot.sum(axis=1).sort_values(ascending=False).head(N).index
-    top_hf = pivot.sum(axis=0).sort_values(ascending=False).head(N).index
-    pivot = pivot.loc[top_risk, top_hf]
-    plt.figure(figsize=(14, 8))
-    sns.heatmap(pivot, annot=True, fmt="d", cmap="Purples", linewidths=0.5)
-    plt.title("Top Risk Areas × Human Factor")
-    st.pyplot(plt.gcf())
-    plt.clf()
-
-elif selected_analise == "Tendência Temporal de Eventos":
-    st.header("📈 Tendência Temporal dos Eventos")
-    df_filtered["AnoMes"] = pd.to_datetime(df_filtered["Date Occurred"], errors="coerce").dt.to_period("M")
-    tendencia = (
-        df_filtered.drop_duplicates(subset=["Event ID"])
-        .groupby(["AnoMes", "Event Type"])["Event ID"].count()
-        .unstack(fill_value=0)
-    )
-    fig = px.line(tendencia, x=tendencia.index.astype(str), y=tendencia.columns, markers=True)
-    fig.update_layout(title="Evolução dos eventos por tipo (incidentes, near miss etc)", xaxis_title="Ano-Mês", yaxis_title="Qtd Eventos")
-    st.plotly_chart(fig, use_container_width=True)
-
-elif selected_analise == "Top Tasks por Risk Area":
-    st.header("🏆 Top Tasks por Risk Area")
-    grouped = (
-        df_filtered.drop_duplicates(subset=["Event ID", "Risk Area", "Task / Activity"])
-        .groupby(["Risk Area", "Task / Activity"])["Event ID"].nunique()
-        .reset_index(name="Qtd Eventos")
-    )
-    N = 12
-    for risk in grouped["Risk Area"].value_counts().head(N).index:
-        st.subheader(f"🔹 {risk}")
-        top_tasks = (
-            grouped[grouped["Risk Area"] == risk]
-            .sort_values("Qtd Eventos", ascending=False)
-            .head(5)
-        )
-        fig = px.bar(top_tasks, x="Task / Activity", y="Qtd Eventos", title=f"Top 5 Tasks em '{risk}'", text="Qtd Eventos")
-        fig.update_layout(xaxis_title="Task / Activity", yaxis_title="Qtd Eventos", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-
+# --- DETECÇÃO DE WEAK SIGNALS ---
+if modo == "Embeddings":
+    st.subheader("🧠 Modo Embeddings")
+    modelo = SentenceTransformer("all-MiniLM-L6-v2")
+    if "embedding" in df_unicos.columns:
+        st.success("Embeddings pré‑calculados detectados.")
+        emb_eventos = df_unicos["embedding"].apply(lambda x: np.array(ast.literal_eval(x)) if isinstance(x, str) else x).tolist()
+    else:
+        st.info("Gerando embeddings das descrições…")
+        emb_eventos = modelo.encode(df_unicos["Description"].astype(str).tolist(), show_progress_bar=True)
+        df_unicos["embedding"] = [e.tolist() for e in emb_eventos]
+    emb_dict = modelo.encode(df_dict["Termo (EN)"].astype(str).tolist(), show_progress_bar=False)
+    resultados = []
+    for emb in emb_eventos:
+        sim = cosine_similarity([emb], emb_dict)[0]
+        hits = [df_dict["Termo (EN)"].iloc[i] for i, s in enumerate(sim) if s >= thresh]
+        resultados.append("; ".join(hits))
 else:
-    st.info("Selecione uma análise no menu.")
+    from rapidfuzz import fuzz
+    st.subheader("🔍 Modo Fuzzy Matching")
+    terms = df_dict["Termo (EN)"].astype(str).tolist()
+    resultados = []
+    for desc in df_unicos["Description"].astype(str):
+        hits = [t for t in terms if fuzz.partial_ratio(t.lower(), desc.lower()) >= int(thresh*100)]
+        resultados.append("; ".join(hits))
 
-st.caption("App por @titetodesco & ChatGPT - Última atualização: 2024-07")
+df_unicos["Weak Signals Found"] = resultados
+
+# ---- Explode para análises ----
+df_exp = df_unicos.copy()
+df_exp["Weak Signals Found"] = df_exp["Weak Signals Found"].fillna("")
+df_exp["Weak Signals Found"] = df_exp["Weak Signals Found"].apply(lambda x: [s.strip() for s in x.split(";") if s.strip()])
+df_exp = df_exp.explode("Weak Signals Found")
+
+# --- Filtros ---
+locs  = df_exp["Location"].dropna().unique().tolist()
+risks = df_exp["Risk Area"].dropna().unique().tolist()
+sel_loc  = st.multiselect("Location", locs, default=locs)
+sel_risk = st.multiselect("Risk Area", risks, default=risks)
+df_fil = df_exp[df_exp["Location"].isin(sel_loc) & df_exp["Risk Area"].isin(sel_risk)]
+
+st.markdown("## 📊 Análises Visuais")
+
+# --- Frequência Geral ---
+freq = df_fil["Weak Signals Found"].value_counts().reset_index()
+freq.columns = ["Weak Signal", "Freq"]
+st.plotly_chart(px.bar(freq, x="Weak Signal", y="Freq", text="Freq", title="Frequência Geral de Weak Signals"), use_container_width=True)
+
+# --- Frequência por Location ---
+st.plotly_chart(
+    px.histogram(df_fil, y="Location", color="Weak Signals Found", title="Frequência de Weak Signals por Location", histfunc="count", height=500),
+    use_container_width=True
+)
+
+# --- Heatmap Risk Area x Weak Signal ---
+if not df_fil.empty and "Risk Area" in df_fil.columns:
+    pivot = pd.pivot_table(df_fil, index="Risk Area", columns="Weak Signals Found", aggfunc="size", fill_value=0)
+    st.plotly_chart(px.imshow(pivot, text_auto=True, aspect="auto", title="Heatmap: Risk Area × Weak Signal"), use_container_width=True)
+
+# --- Dispersão Temporal ---
+if "Date Occurred" in df_fil.columns:
+    df_t = df_fil.dropna(subset=["Date Occurred"])
+    if not df_t.empty:
+        fig_time = px.scatter(
+            df_t,
+            x="Date Occurred",
+            y=df_t["Weak Signals Found"].astype(str),
+            color="Location",
+            title="🕒 Dispersão Temporal dos Weak Signals",
+            height=450
+        )
+        st.plotly_chart(fig_time, use_container_width=True)
+        st.plotly_chart(
+            px.histogram(
+                df_t,
+                x="Location",
+                color="Weak Signals Found",
+                histfunc="count",
+                title="📍 Weak Signals por Location ao Longo do Tempo",
+                height=450
+            ),
+            use_container_width=True
+        )
+    else:
+        st.info("Sem datas válidas para o gráfico temporal.")
+
+# --- Download do resultado ---
+st.markdown("### ⬇️ Baixar planilha de resultados")
+buffer = BytesIO()
+df_unicos.to_excel(buffer, index=False, engine="openpyxl")
+st.download_button("📥 Download XLSX", data=buffer.getvalue(), file_name="eventos_weak_signals.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
