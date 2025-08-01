@@ -12,8 +12,8 @@ st.set_page_config(layout="wide")
 st.title("🔎 Detecção de Sinais Fracos em Eventos Offshore")
 
 # URLs dos arquivos no GitHub
-URL_EVENTOS = "https://raw.githubusercontent.com/titetodesco/Precursores/main/TRATADO_safeguardOffShore.xlsx"
-URL_WEAK = "https://raw.githubusercontent.com/titetodesco/Precursores/main/DicionarioWaekSignals.xlsx"
+URL_EVENTOS = "https://raw.githubusercontent.com/titetodesco/SinaisFracos/main/TRATADO_safeguardOffShore.xlsx"
+URL_WEAK = "https://raw.githubusercontent.com/titetodesco/SinaisFracos/main/DicionarioWaekSignals.xlsx"
 
 def carregar_excel_url(url):
     r = requests.get(url)
